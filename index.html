@@ -26,11 +26,22 @@
         // Set Firebase log level for debugging
         setLogLevel('debug');
         
+        // --- YOUR CUSTOM FIREBASE CONFIGURATION (Used as fallback) ---
+        const CUSTOM_FIREBASE_CONFIG = {
+            apiKey: "AIzaSyAZk_fKQHU28TjW2ArkIUTY_zmyc-AkXLk",
+            authDomain: "coffee-spark-ai-barista-56d10.firebaseapp.com",
+            projectId: "coffee-spark-ai-barista-56d10",
+            storageBucket: "coffee-spark-ai-barista-56d10.firebasestorage.app",
+            messagingSenderId: "178037138253",
+            appId: "1:178037138253:web:20a65fcb3ada180a874d04"
+        };
+        // --- END CUSTOM CONFIG ---
+
         // --- GLOBAL FIREBASE VARIABLES ---
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-student-spinner-id';
         
-        // Retrieve config from hosting environment or fall back to an empty object for local testing
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        // Retrieve config from hosting environment (if available) or fall back to your custom config
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : CUSTOM_FIREBASE_CONFIG;
         
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
         
@@ -62,11 +73,12 @@
         // --- FIREBASE INITIALIZATION AND AUTH ---
 
         async function initFirebase() {
+            // Check if we have any config keys to proceed with initialization
             const configKeys = Object.keys(firebaseConfig).length;
 
-            if (configKeys === 0) {
-                // GRACEFUL FALLBACK FOR LOCAL EXECUTION
-                console.warn("Firebase Initialization Skipped: No configuration found.");
+            if (configKeys === 0 || !firebaseConfig.projectId) {
+                // GRACEFUL FALLBACK FOR LOCAL EXECUTION (or if custom config was also missing)
+                console.warn("Firebase Initialization Skipped: No project configuration found.");
                 loadingIndicator.textContent = 'Data persistence disabled. UI functional, but data will not save. (Add Firebase config locally for persistence)';
                 loadingIndicator.classList.remove('text-indigo-500');
                 loadingIndicator.classList.add('text-yellow-600', 'font-bold');
@@ -102,7 +114,8 @@
                         setupFirestoreListener();
                     } else {
                         console.log("No user signed in.");
-                        userId = 'anonymous';
+                        // This fallback should ideally not happen if signInAnonymously succeeds
+                        userId = 'anonymous'; 
                     }
                     loadingIndicator.classList.add('hidden');
                 });
@@ -121,7 +134,7 @@
         }
 
         function setupFirestoreListener() {
-            if (!isDbReady) return;
+            if (!isDbReady || userId === 'loading' || userId === 'anonymous') return;
 
             if (unsubscribeTasks) {
                 unsubscribeTasks(); // Clean up previous listener if switching users
@@ -492,9 +505,12 @@
                     wheelCanvas.height = size;
                     
                     // Position the HTML indicator dynamically
-                    wheelIndicator.style.left = `${wheelCanvas.offsetLeft + wheelCanvas.width / 2}px`;
-                    wheelIndicator.style.top = `${wheelCanvas.offsetTop - 15}px`; // Adjust up by half its height
-                    
+                    // Wait for a moment for the canvas to settle and get correct offsetTop
+                    setTimeout(() => {
+                        wheelIndicator.style.left = `${wheelCanvas.offsetLeft + wheelCanvas.width / 2}px`;
+                        wheelIndicator.style.top = `${wheelCanvas.offsetTop - 15}px`; // Adjust up by half its height
+                    }, 50);
+
                     drawWheel();
                 }
             });
@@ -535,7 +551,8 @@
     </style>
 </head>
 <body class="bg-gray-100 min-h-screen font-sans antialiased p-4 sm:p-6">
-    <!-- Title and User ID --><div class="max-w-4xl mx-auto mb-6 text-center">
+    <!-- Title and User ID -->
+    <div class="max-w-4xl mx-auto mb-6 text-center">
         <h1 class="text-4xl font-extrabold text-orange-600 mb-2">Student Focus Navigator</h1>
         <p id="userIdDisplay" class="text-sm text-gray-500">Loading...</p>
         <p class="text-xs text-gray-400 mt-1 italic">This ID is your private data key.</p>
@@ -544,10 +561,12 @@
 
     <div class="max-w-4xl mx-auto grid grid-cols-1 lg:grid-cols-2 gap-6">
         
-        <!-- Task Management Section (Time Table / Works Completed/Not Completed) --><div class="bg-white p-6 rounded-xl shadow-2xl border border-gray-200 order-2 lg:order-1">
+        <!-- Task Management Section (Time Table / Works Completed/Not Completed) -->
+        <div class="bg-white p-6 rounded-xl shadow-2xl border border-gray-200 order-2 lg:order-1">
             <h2 class="text-2xl font-bold text-gray-800 mb-4 border-b pb-2">1. Task Manager & Schedule</h2>
             
-            <!-- Task Input Form --><form id="taskForm" class="flex flex-col space-y-3 mb-6 p-4 bg-gray-50 rounded-lg shadow-inner">
+            <!-- Task Input Form -->
+            <form id="taskForm" class="flex flex-col space-y-3 mb-6 p-4 bg-gray-50 rounded-lg shadow-inner">
                 <input type="text" id="taskNameInput" placeholder="Enter your assignment or study task (e.g., Calc Homework, Read Chapter 5)" required 
                         class="p-3 border border-gray-300 rounded-lg focus:ring-orange-500 focus:border-orange-500 transition duration-150">
                 <div class="flex space-x-2">
@@ -559,14 +578,18 @@
                 </div>
             </form>
 
-            <!-- Task List --><div id="task-list-container" class="space-y-1">
-                <!-- Tasks will be rendered here by JavaScript --></div>
+            <!-- Task List -->
+            <div id="task-list-container" class="space-y-1">
+                <!-- Tasks will be rendered here by JavaScript -->
+            </div>
         </div>
 
-        <!-- Spin Wheel Section --><div id="wheelContainer" class="bg-white p-6 rounded-xl shadow-2xl border border-gray-200 flex flex-col items-center justify-center relative order-1 lg:order-2">
+        <!-- Spin Wheel Section -->
+        <div id="wheelContainer" class="bg-white p-6 rounded-xl shadow-2xl border border-gray-200 flex flex-col items-center justify-center relative order-1 lg:order-2">
             <h2 class="text-2xl font-bold text-gray-800 mb-6 border-b pb-2 w-full text-center">2. Spin the Wheel Decision Maker</h2>
 
-            <!-- The fixed indicator arrow --><div id="wheelIndicator" class="absolute"></div> 
+            <!-- The fixed indicator arrow -->
+            <div id="wheelIndicator" class="absolute"></div> 
             
             <canvas id="wheelCanvas" width="300" height="300" class="mb-6"></canvas>
             
@@ -593,7 +616,8 @@
 
     </div>
 
-    <!-- Custom Confirmation Modal (Replaces native confirm()) --><div id="deleteModal" class="hidden fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center modal-overlay transition-opacity duration-300">
+    <!-- Custom Confirmation Modal (Replaces native confirm()) -->
+    <div id="deleteModal" class="hidden fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center modal-overlay transition-opacity duration-300">
         <div class="bg-white p-6 rounded-xl shadow-3xl max-w-sm w-full transform scale-100 transition-transform duration-300">
             <h3 class="text-xl font-bold text-red-600 mb-3">Confirm Deletion</h3>
             <p class="text-gray-700 mb-5">Are you sure you want to permanently delete the task: <span id="deleteTaskName" class="font-semibold italic text-gray-900"></span>?</p>
