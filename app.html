@@ -5,10 +5,22 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Student Task Spinner</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        // Use Inter font globally
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    },
+                },
+            },
+        }
+    </script>
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, onSnapshot, collection, query, addDoc, updateDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, onSnapshot, collection, query, addDoc, updateDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // Set Firebase log level for debugging
@@ -16,13 +28,19 @@
         
         // --- GLOBAL FIREBASE VARIABLES ---
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-student-spinner-id';
+        
+        // Retrieve config from hosting environment or fall back to an empty object for local testing
         const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
         
-        let db;
-        let auth;
+        // Database and Auth instances
+        let db = null;
+        let auth = null;
         let userId = 'loading'; // Default state before auth is ready
+        let isDbReady = false; // Flag to check if DB is initialized
         let unsubscribeTasks;
+        let currentTaskToDelete = null; // State for the custom confirmation modal
 
         // --- APP STATE ---
         let tasks = [];
@@ -32,6 +50,11 @@
         const spinButton = document.getElementById('spinButton');
         const resultDisplay = document.getElementById('resultDisplay');
         const loadingIndicator = document.getElementById('loadingIndicator');
+        const deleteModal = document.getElementById('deleteModal');
+        const deleteTaskName = document.getElementById('deleteTaskName');
+        const incompleteCountDisplay = document.getElementById('incompleteCount'); 
+        const completedCountDisplay = document.getElementById('completedCount'); 
+
 
         // --- UTILITY FUNCTIONS ---
         const today = new Date().toISOString().split('T')[0];
@@ -39,10 +62,30 @@
         // --- FIREBASE INITIALIZATION AND AUTH ---
 
         async function initFirebase() {
+            const configKeys = Object.keys(firebaseConfig).length;
+
+            if (configKeys === 0) {
+                // GRACEFUL FALLBACK FOR LOCAL EXECUTION
+                console.warn("Firebase Initialization Skipped: No configuration found.");
+                loadingIndicator.textContent = 'Data persistence disabled. UI functional, but data will not save. (Add Firebase config locally for persistence)';
+                loadingIndicator.classList.remove('text-indigo-500');
+                loadingIndicator.classList.add('text-yellow-600', 'font-bold');
+                userId = 'local-test-user';
+                document.getElementById('userIdDisplay').textContent = `User ID: ${userId}`;
+                loadingIndicator.classList.remove('hidden');
+                isDbReady = false;
+                // Since DB is not ready, we initialize tasks as an empty array and draw the wheel
+                tasks = [];
+                renderTaskList();
+                drawWheel();
+                return; // Exit function early
+            }
+
             try {
                 const app = initializeApp(firebaseConfig);
                 db = getFirestore(app);
                 auth = getAuth(app);
+                isDbReady = true;
 
                 // Sign in logic
                 if (initialAuthToken) {
@@ -54,11 +97,10 @@
                 onAuthStateChanged(auth, (user) => {
                     if (user) {
                         userId = user.uid;
-                        document.getElementById('userIdDisplay').textContent = `User ID: ${userId.substring(0, 8)}...`;
+                        document.getElementById('userIdDisplay').textContent = `User ID: ${userId}`;
                         console.log("Firebase Auth Ready. User ID:", userId);
                         setupFirestoreListener();
                     } else {
-                        // Should not happen in this environment, but good practice
                         console.log("No user signed in.");
                         userId = 'anonymous';
                     }
@@ -66,17 +108,21 @@
                 });
             } catch (error) {
                 console.error("Error initializing Firebase or signing in:", error);
-                loadingIndicator.textContent = 'Error loading app. Check console.';
+                loadingIndicator.textContent = 'Error loading app. Check console for Firebase config issues.';
                 loadingIndicator.classList.remove('text-indigo-500');
                 loadingIndicator.classList.add('text-red-500');
+                isDbReady = false;
             }
         }
 
         function getCollectionRef() {
+            // Using the private data path structure
             return collection(db, 'artifacts', appId, 'users', userId, 'student-tasks');
         }
 
         function setupFirestoreListener() {
+            if (!isDbReady) return;
+
             if (unsubscribeTasks) {
                 unsubscribeTasks(); // Clean up previous listener if switching users
             }
@@ -89,12 +135,15 @@
                     newTasks.push({ id: doc.id, ...doc.data() });
                 });
                 
-                // Sort tasks by due date (Time Table view integration)
+                // Sort tasks by completion status, then by due date
                 newTasks.sort((a, b) => {
                     if (a.completed !== b.completed) {
                         return a.completed ? 1 : -1; // Incomplete first
                     }
-                    return new Date(a.dueDate) - new Date(b.dueDate); // Then by date
+                    // Handle potential null/undefined dates gracefully
+                    const dateA = a.dueDate ? new Date(a.dueDate).getTime() : 0;
+                    const dateB = b.dueDate ? new Date(b.dueDate).getTime() : 0;
+                    return dateA - dateB; // Then by date
                 });
 
                 tasks = newTasks;
@@ -105,6 +154,37 @@
             });
         }
 
+        // --- CUSTOM CONFIRMATION MODAL LOGIC ---
+
+        function showDeleteModal(task) {
+            currentTaskToDelete = task;
+            deleteTaskName.textContent = task.name;
+            deleteModal.classList.remove('hidden');
+        }
+
+        function cancelDelete() {
+            currentTaskToDelete = null;
+            deleteModal.classList.add('hidden');
+        }
+
+        async function confirmDelete() {
+            if (!currentTaskToDelete || !isDbReady) {
+                 cancelDelete(); 
+                 return;
+            }
+
+            const taskId = currentTaskToDelete.id;
+            const taskDocRef = doc(getCollectionRef(), taskId);
+            
+            try {
+                await deleteDoc(taskDocRef);
+                console.log(`Task ${taskId} deleted.`);
+            } catch (error) {
+                console.error("Error deleting document:", error);
+            }
+            cancelDelete(); // Close modal after successful or failed attempt
+        }
+        
         // --- TASK MANAGEMENT FUNCTIONS ---
 
         async function addTask(name, dueDate) {
@@ -117,35 +197,51 @@
                 createdAt: new Date().toISOString()
             };
 
-            try {
-                await addDoc(getCollectionRef(), newTask);
-                console.log("Task added successfully.");
-            } catch (error) {
-                console.error("Error adding document:", error);
+            if (isDbReady) {
+                 try {
+                    await addDoc(getCollectionRef(), newTask);
+                    console.log("Task added successfully.");
+                } catch (error) {
+                    console.error("Error adding document:", error);
+                }
+            } else {
+                // Local mode: add to tasks array for immediate UI update, but it won't persist
+                newTask.id = crypto.randomUUID();
+                tasks.push(newTask);
+                // Sort and re-render
+                tasks.sort((a, b) => (a.completed ? 1 : -1) - (b.completed ? 1 : -1) || (new Date(a.dueDate) - new Date(b.dueDate)));
+                renderTaskList();
+                drawWheel();
             }
         }
 
         async function toggleTaskCompletion(taskId, currentStatus) {
-            const taskDocRef = doc(getCollectionRef(), taskId);
-            try {
-                await updateDoc(taskDocRef, {
-                    completed: !currentStatus,
-                });
-                console.log(`Task ${taskId} completion toggled to ${!currentStatus}`);
-            } catch (error) {
-                console.error("Error updating document:", error);
+            if (isDbReady) {
+                const taskDocRef = doc(getCollectionRef(), taskId);
+                try {
+                    await updateDoc(taskDocRef, {
+                        completed: !currentStatus,
+                    });
+                    console.log(`Task ${taskId} completion toggled to ${!currentStatus}`);
+                } catch (error) {
+                    console.error("Error updating document:", error);
+                }
+            } else {
+                // Local mode: find and update task
+                const taskIndex = tasks.findIndex(t => t.id === taskId);
+                if (taskIndex !== -1) {
+                    tasks[taskIndex].completed = !currentStatus;
+                    tasks.sort((a, b) => (a.completed ? 1 : -1) - (b.completed ? 1 : -1) || (new Date(a.dueDate) - new Date(b.dueDate)));
+                    renderTaskList();
+                    drawWheel();
+                }
             }
         }
 
-        async function deleteTask(taskId) {
-            const taskDocRef = doc(getCollectionRef(), taskId);
-            if (confirm("Are you sure you want to delete this task?")) {
-                 try {
-                    await deleteDoc(taskDocRef);
-                    console.log(`Task ${taskId} deleted.`);
-                } catch (error) {
-                    console.error("Error deleting document:", error);
-                }
+        function deleteTask(taskId) {
+            const task = tasks.find(t => t.id === taskId);
+            if (task) {
+                showDeleteModal(task);
             }
         }
 
@@ -166,28 +262,38 @@
             const incompleteTasks = tasks.filter(t => !t.completed);
             const completedTasks = tasks.filter(t => t.completed);
 
+            // Update the new count displays
+            if (incompleteCountDisplay) {
+                incompleteCountDisplay.textContent = incompleteTasks.length;
+            }
+            if (completedCountDisplay) {
+                completedCountDisplay.textContent = completedTasks.length;
+            }
+
             // Function to render a section
             const renderSection = (title, taskArray, bgColor) => {
-                if (taskArray.length === 0) {
+                if (taskArray.length === 0 && title === 'Incomplete Works (Schedule)') {
                     const emptyMessage = document.createElement('p');
                     emptyMessage.className = 'text-center text-gray-500 py-4 italic';
-                    emptyMessage.textContent = `No ${title.toLowerCase()} yet. Add some!`;
+                    emptyMessage.textContent = `No ${title.toLowerCase().replace(' (schedule)', '')} yet. Add some!`;
                     taskListContainer.appendChild(emptyMessage);
                     return;
                 }
-                
+                if (taskArray.length === 0) return; // Hide completed section if empty
+
                 const header = document.createElement('h3');
-                header.className = `${bgColor} text-white font-bold p-2 mt-4 rounded-t-lg shadow-md flex justify-between items-center`;
+                header.className = `${bgColor} text-white font-bold p-3 mt-4 rounded-t-lg shadow-md flex justify-between items-center`;
                 header.textContent = `${title} (${taskArray.length})`;
                 taskListContainer.appendChild(header);
 
                 taskArray.forEach(task => {
                     const taskElement = document.createElement('div');
                     taskElement.className = 'flex items-center justify-between p-3 border-b border-gray-200 hover:bg-gray-50 transition duration-150';
+                    let isOverdue = !task.completed && new Date(task.dueDate) < new Date(today);
                     if (task.completed) {
                         taskElement.classList.add('bg-green-50/50', 'line-through', 'text-gray-600');
-                    } else if (new Date(task.dueDate) < new Date(today)) {
-                        taskElement.classList.add('bg-red-100/50');
+                    } else if (isOverdue) {
+                        taskElement.classList.add('bg-red-100/50', 'border-red-400');
                     }
                     
                     const nameAndDate = document.createElement('div');
@@ -195,11 +301,12 @@
                     
                     const name = document.createElement('span');
                     name.className = 'font-semibold text-gray-800';
+                    if (task.completed) name.classList.remove('text-gray-800');
                     name.textContent = task.name;
                     
                     const date = document.createElement('span');
-                    date.className = 'text-xs text-gray-500 mt-0.5';
-                    date.textContent = `Due: ${task.dueDate === today ? 'Today' : task.dueDate}`;
+                    date.className = `text-xs mt-0.5 ${isOverdue ? 'text-red-600 font-bold' : 'text-gray-500'}`;
+                    date.textContent = `Due: ${task.dueDate === today ? 'Today' : task.dueDate} ${isOverdue ? ' (OVERDUE)' : ''}`;
                     
                     nameAndDate.appendChild(name);
                     nameAndDate.appendChild(date);
@@ -210,18 +317,20 @@
 
                     // Checkbox/Toggle Button
                     const toggleBtn = document.createElement('button');
-                    toggleBtn.className = `p-2 rounded-full text-white shadow-md transition duration-200 ${task.completed ? 'bg-green-500 hover:bg-green-600' : 'bg-orange-500 hover:bg-orange-600'}`;
+                    toggleBtn.className = `p-2 rounded-full text-white shadow-md transition duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 ${task.completed ? 'bg-green-500 hover:bg-green-600 focus:ring-green-500' : 'bg-orange-500 hover:bg-orange-600 focus:ring-orange-500'}`;
+                    toggleBtn.title = task.completed ? 'Mark as Incomplete' : 'Mark as Complete';
                     toggleBtn.innerHTML = task.completed 
                         ? `<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 14.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" /></svg>` 
-                        : `<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" /></svg>`;
-                    toggleBtn.onclick = () => toggleTaskCompletion(task.id, task.completed);
+                        : `<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" /></svg>`;
+                    toggleBtn.onclick = () => window.toggleTaskCompletion(task.id, task.completed);
                     actions.appendChild(toggleBtn);
 
                     // Delete Button
                     const deleteBtn = document.createElement('button');
-                    deleteBtn.className = 'text-red-500 hover:text-red-700 p-2 rounded-full transition duration-150';
+                    deleteBtn.className = 'text-red-500 hover:text-red-700 p-2 rounded-full transition duration-150 focus:outline-none focus:ring-2 focus:ring-red-500';
+                    deleteBtn.title = 'Delete Task';
                     deleteBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd" /></svg>`;
-                    deleteBtn.onclick = () => deleteTask(task.id);
+                    deleteBtn.onclick = () => window.deleteTask(task.id);
                     actions.appendChild(deleteBtn);
 
                     taskElement.appendChild(actions);
@@ -241,13 +350,28 @@
         function drawWheel() {
             const spinTasks = getIncompleteTasks();
             const numSections = spinTasks.length;
-            const arcSize = (2 * Math.PI) / numSections;
+            const arcSize = numSections > 0 ? (2 * Math.PI) / numSections : 0;
             const radius = wheelCanvas.width / 2;
-            const colors = ['#f97316', '#3b82f6', '#fcd34d', '#10b981', '#ef4444', '#a855f7']; // Orange, Blue, Yellow, Green, Red, Purple
+            const colors = ['#f97316', '#3b82f6', '#10b981', '#ef4444', '#a855f7', '#fcd34d']; 
 
             ctx.clearRect(0, 0, wheelCanvas.width, wheelCanvas.height);
             ctx.strokeStyle = '#fff';
             ctx.lineWidth = 2;
+
+            if (numSections === 0) {
+                // Draw a simple gray wheel placeholder
+                ctx.beginPath();
+                ctx.arc(radius, radius, radius - 2, 0, 2 * Math.PI);
+                ctx.fillStyle = '#cbd5e1';
+                ctx.fill();
+                
+                ctx.fillStyle = '#475569';
+                ctx.font = '16px Inter, sans-serif';
+                ctx.textAlign = 'center';
+                ctx.fillText('Add tasks to spin!', radius, radius);
+                
+                return; 
+            }
 
             spinTasks.forEach((task, i) => {
                 const startAngle = i * arcSize;
@@ -269,10 +393,10 @@
                 ctx.rotate(startAngle + arcSize / 2);
                 ctx.textAlign = 'right';
                 ctx.fillStyle = '#fff';
-                ctx.font = '12px Inter, sans-serif';
+                ctx.font = 'bold 12px Inter, sans-serif';
                 ctx.shadowColor = 'rgba(0,0,0,0.5)';
                 ctx.shadowBlur = 4;
-                ctx.fillText(task.name.substring(0, 15), radius * 0.9, 10);
+                ctx.fillText(task.name.substring(0, 15), radius * 0.9, 5);
                 ctx.restore();
             });
 
@@ -281,32 +405,20 @@
             ctx.arc(radius, radius, 15, 0, 2 * Math.PI);
             ctx.fillStyle = '#334155';
             ctx.fill();
-
-            // Draw indicator arrow (at the top)
-            ctx.fillStyle = '#ef4444';
-            ctx.beginPath();
-            ctx.moveTo(radius - 10, 0);
-            ctx.lineTo(radius + 10, 0);
-            ctx.lineTo(radius, 25);
-            ctx.closePath();
-            ctx.fill();
-
-            if (numSections === 0) {
-                ctx.fillStyle = '#334155';
-                ctx.font = '16px Inter, sans-serif';
-                ctx.textAlign = 'center';
-                ctx.fillText('Add tasks to spin!', radius, radius);
-            }
         }
 
         let isSpinning = false;
-        let currentRotation = 0;
+        const duration = 5000; // Duration of the spin animation in milliseconds (5 seconds)
+        const wheelIndicator = document.getElementById('wheelIndicator');
+
 
         function spinWheel() {
             if (isSpinning) return;
             const spinTasks = getIncompleteTasks();
             if (spinTasks.length === 0) {
                 resultDisplay.textContent = "No tasks to spin! Add some incomplete works.";
+                resultDisplay.classList.remove('text-green-600', 'text-indigo-500');
+                resultDisplay.classList.add('text-red-500');
                 return;
             }
 
@@ -316,117 +428,128 @@
             resultDisplay.classList.remove('text-green-600', 'text-red-500');
             resultDisplay.classList.add('text-indigo-500');
 
-
             const numSections = spinTasks.length;
-            const arcSize = (2 * Math.PI) / numSections;
+            const arcSize = (2 * Math.PI) / numSections; // radians per section
 
-            // Calculate a random degree (e.g., 5-10 full rotations + a random stop point)
-            const minRotations = 5;
-            const maxRotations = 10;
-            const randomRotation = Math.random() * 360;
-
-            // Target angle (in radians)
-            const targetAngleRad = ((minRotations + (Math.random() * (maxRotations - minRotations))) * 2 * Math.PI) + (randomRotation * (Math.PI / 180));
-            
-            // Convert to a normalized positive angle for stopping point calculation (360 degrees total)
-            const normalizedStopAngle = 360 - (randomRotation % 360); 
-
-            // Calculate the winning index based on the normalized stop angle (The wheel is drawn clockwise)
-            const winningIndex = Math.floor(normalizedStopAngle / (360 / numSections));
+            // Determine the winning section index randomly
+            const winningIndex = Math.floor(Math.random() * numSections);
             const winner = spinTasks[winningIndex];
 
-            // Animation loop
-            const startTime = Date.now();
-            const duration = 5000; // 5 seconds spin
+            // Calculate target rotation in degrees
+            const targetSegmentCenterDegrees = (winningIndex * (360 / numSections)) + ((360 / numSections) / 2);
+            let neededRotationDegrees = (270 - targetSegmentCenterDegrees);
 
-            function animateSpin() {
-                const elapsed = Date.now() - startTime;
-                const progress = Math.min(1, elapsed / duration);
-                
-                // Ease out function (to slow down at the end)
-                const easing = 1 - Math.pow(1 - progress, 3); 
-                
-                // Calculate current rotation
-                const rotation = easing * targetAngleRad;
-                currentRotation = rotation;
-
-                // Apply rotation to the canvas
-                wheelCanvas.style.transform = `rotate(${rotation}rad)`;
-
-                if (progress < 1) {
-                    requestAnimationFrame(animateSpin);
-                } else {
-                    // Animation finished
-                    isSpinning = false;
-                    spinButton.disabled = false;
-                    resultDisplay.textContent = `GO TIME: ${winner.name}!`;
-                    resultDisplay.classList.remove('text-indigo-500');
-                    resultDisplay.classList.add('text-green-600', 'font-bold');
-
-                    // Small bounce effect after stop
-                    wheelCanvas.style.transition = 'transform 0.2s ease-out';
-                    wheelCanvas.style.transform = `rotate(${rotation + (Math.PI/180) * 5}rad)`; // 5 degree overshoot
-                    setTimeout(() => {
-                        wheelCanvas.style.transform = `rotate(${rotation}rad)`;
-                        wheelCanvas.style.transition = 'none';
-                    }, 200);
-                }
+            // Ensure it's a positive angle and add full spins for momentum
+            while (neededRotationDegrees < 0) {
+                neededRotationDegrees += 360;
             }
-            animateSpin();
+
+            const fullSpins = 5 + Math.floor(Math.random() * 5); // 5 to 9 full spins
+            const totalTargetRotationDegrees = (fullSpins * 360) + neededRotationDegrees;
+            
+            // Set the transition property only once when starting the spin
+            wheelCanvas.style.transition = 'transform 5s cubic-bezier(0.1, 0.9, 0.2, 1)';
+            wheelCanvas.style.transform = `rotate(${totalTargetRotationDegrees}deg)`;
+
+            setTimeout(() => {
+                isSpinning = false;
+                spinButton.disabled = false;
+                resultDisplay.textContent = `GO TIME: ${winner.name}!`;
+                resultDisplay.classList.remove('text-indigo-500');
+                resultDisplay.classList.add('text-green-600', 'font-extrabold');
+
+                // Apply a slight bounce
+                wheelCanvas.style.transition = 'transform 0.2s ease-out';
+                wheelCanvas.style.transform = `rotate(${totalTargetRotationDegrees + 5}deg)`; // 5 degree overshoot
+                setTimeout(() => {
+                    wheelCanvas.style.transform = `rotate(${totalTargetRotationDegrees}deg)`;
+                    wheelCanvas.style.transition = 'none'; // Clear transition for next spin
+                }, 200);
+
+            }, duration);
         }
 
         // --- EVENT LISTENERS AND INITIALIZATION ---
         
         document.addEventListener('DOMContentLoaded', () => {
+            // Set initial date to today
             document.getElementById('taskDateInput').value = today;
             document.getElementById('taskForm').addEventListener('submit', handleTaskFormSubmit);
             spinButton.addEventListener('click', spinWheel);
+            document.getElementById('cancelDeleteButton').addEventListener('click', cancelDelete);
+            document.getElementById('confirmDeleteButton').addEventListener('click', confirmDelete);
 
-            // Resize observer to keep the canvas square and centered
+            // Set initial message for the result display
+            resultDisplay.textContent = "Add tasks and spin!";
+
+            // Resize observer to keep the wheel container responsive and the canvas square
+            const wheelContainer = document.getElementById('wheelContainer');
             const resizeObserver = new ResizeObserver(entries => {
                 for (let entry of entries) {
-                    const size = Math.min(entry.contentRect.width, 300);
+                    // Calculate the size based on the container width, max 300px
+                    const size = Math.min(entry.contentRect.width - 48, 300); // subtract padding (p-6 = 24px each side)
                     wheelCanvas.width = size;
                     wheelCanvas.height = size;
+                    
+                    // Position the HTML indicator dynamically
+                    wheelIndicator.style.left = `${wheelCanvas.offsetLeft + wheelCanvas.width / 2}px`;
+                    wheelIndicator.style.top = `${wheelCanvas.offsetTop - 15}px`; // Adjust up by half its height
+                    
                     drawWheel();
                 }
             });
-            resizeObserver.observe(document.getElementById('wheelContainer'));
+            resizeObserver.observe(wheelContainer);
             
             initFirebase();
         });
 
-        // Expose functions for buttons created in the render function
+        // Expose functions to the global scope for event handlers created in renderTaskList
         window.toggleTaskCompletion = toggleTaskCompletion;
         window.deleteTask = deleteTask;
+        window.confirmDelete = confirmDelete;
+        window.cancelDelete = cancelDelete;
 
     </script>
     <style>
         /* Custom CSS for the wheel transition */
         #wheelCanvas {
-            transition: transform 5s cubic-bezier(0.1, 0.9, 0.2, 1);
+            /* Removed transition here, it will be set by JS dynamically */
             will-change: transform;
+            transform-origin: center center; /* Ensure rotation is around the center */
+        }
+        /* Custom styles for the confirmation modal */
+        .modal-overlay {
+            z-index: 50; /* Ensure it's on top of everything */
+        }
+        /* Style for the fixed indicator arrow */
+        #wheelIndicator {
+            width: 0;
+            height: 0;
+            border-left: 15px solid transparent;
+            border-right: 15px solid transparent;
+            border-top: 25px solid #ef4444; /* Red arrow */
+            position: absolute;
+            transform: translateX(-50%); /* Center horizontally */
+            z-index: 10; /* Ensure it's above the canvas */
         }
     </style>
 </head>
 <body class="bg-gray-100 min-h-screen font-sans antialiased p-4 sm:p-6">
-    <!-- Title and User ID -->
-    <div class="max-w-4xl mx-auto mb-6 text-center">
+    <!-- Title and User ID --><div class="max-w-4xl mx-auto mb-6 text-center">
         <h1 class="text-4xl font-extrabold text-orange-600 mb-2">Student Focus Navigator</h1>
         <p id="userIdDisplay" class="text-sm text-gray-500">Loading...</p>
+        <p class="text-xs text-gray-400 mt-1 italic">This ID is your private data key.</p>
         <div id="loadingIndicator" class="text-indigo-500 font-semibold mt-2">Connecting to secure storage...</div>
     </div>
 
     <div class="max-w-4xl mx-auto grid grid-cols-1 lg:grid-cols-2 gap-6">
         
-        <!-- Task Management Section (Time Table / Works Completed/Not Completed) -->
-        <div class="bg-white p-6 rounded-xl shadow-2xl border border-gray-200">
+        <!-- Task Management Section (Time Table / Works Completed/Not Completed) --><div class="bg-white p-6 rounded-xl shadow-2xl border border-gray-200 order-2 lg:order-1">
             <h2 class="text-2xl font-bold text-gray-800 mb-4 border-b pb-2">1. Task Manager & Schedule</h2>
             
-            <!-- Task Input Form -->
-            <form id="taskForm" class="flex flex-col space-y-3 mb-6 p-4 bg-gray-50 rounded-lg shadow-inner">
+            <!-- Task Input Form --><form id="taskForm" class="flex flex-col space-y-3 mb-6 p-4 bg-gray-50 rounded-lg shadow-inner">
                 <input type="text" id="taskNameInput" placeholder="Enter your assignment or study task (e.g., Calc Homework, Read Chapter 5)" required 
-                       class="p-3 border border-gray-300 rounded-lg focus:ring-orange-500 focus:border-orange-500 transition duration-150">
+                        class="p-3 border border-gray-300 rounded-lg focus:ring-orange-500 focus:border-orange-500 transition duration-150">
                 <div class="flex space-x-2">
                     <label for="taskDateInput" class="sr-only">Due Date</label>
                     <input type="date" id="taskDateInput" required class="p-3 border border-gray-300 rounded-lg w-1/2 focus:ring-orange-500 focus:border-orange-500 transition duration-150">
@@ -436,27 +559,53 @@
                 </div>
             </form>
 
-            <!-- Task List -->
-            <div id="task-list-container" class="space-y-1">
-                <!-- Tasks will be rendered here by JavaScript -->
-            </div>
+            <!-- Task List --><div id="task-list-container" class="space-y-1">
+                <!-- Tasks will be rendered here by JavaScript --></div>
         </div>
 
-        <!-- Spin Wheel Section -->
-        <div id="wheelContainer" class="bg-white p-6 rounded-xl shadow-2xl border border-gray-200 flex flex-col items-center justify-center">
+        <!-- Spin Wheel Section --><div id="wheelContainer" class="bg-white p-6 rounded-xl shadow-2xl border border-gray-200 flex flex-col items-center justify-center relative order-1 lg:order-2">
             <h2 class="text-2xl font-bold text-gray-800 mb-6 border-b pb-2 w-full text-center">2. Spin the Wheel Decision Maker</h2>
 
+            <!-- The fixed indicator arrow --><div id="wheelIndicator" class="absolute"></div> 
+            
             <canvas id="wheelCanvas" width="300" height="300" class="mb-6"></canvas>
             
-            <p id="resultDisplay" class="text-center text-xl font-medium text-indigo-500 mb-4 h-10 flex items-center"></p>
+            <p id="resultDisplay" class="text-center text-xl font-medium text-indigo-500 mb-4 h-10 flex items-center justify-center"></p>
 
             <button id="spinButton" class="bg-orange-500 text-white font-extrabold text-lg px-8 py-4 rounded-full shadow-lg hover:bg-orange-600 active:shadow-none transform hover:scale-105 transition duration-200 disabled:opacity-50 disabled:cursor-not-allowed">
                 SPIN TO CHOOSE
             </button>
             <p class="text-sm text-gray-500 mt-3 italic">Only Incomplete Tasks appear on the wheel.</p>
+            
+            <!-- TASK COUNT DISPLAY -->
+            <div id="taskCounts" class="mt-4 pt-4 border-t border-gray-200 w-full flex justify-around text-center">
+                <div class="flex flex-col items-center">
+                    <span id="incompleteCount" class="text-3xl font-bold text-orange-600">0</span>
+                    <span class="text-sm text-gray-500 font-medium mt-1">Ready to Spin</span>
+                </div>
+                <div class="flex flex-col items-center">
+                    <span id="completedCount" class="text-3xl font-bold text-green-600">0</span>
+                    <span class="text-sm text-gray-500 font-medium mt-1">Completed</span>
+                </div>
+            </div>
+
         </div>
 
     </div>
+
+    <!-- Custom Confirmation Modal (Replaces native confirm()) --><div id="deleteModal" class="hidden fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center modal-overlay transition-opacity duration-300">
+        <div class="bg-white p-6 rounded-xl shadow-3xl max-w-sm w-full transform scale-100 transition-transform duration-300">
+            <h3 class="text-xl font-bold text-red-600 mb-3">Confirm Deletion</h3>
+            <p class="text-gray-700 mb-5">Are you sure you want to permanently delete the task: <span id="deleteTaskName" class="font-semibold italic text-gray-900"></span>?</p>
+            <div class="flex justify-end space-x-3">
+                <button id="cancelDeleteButton" class="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-200 rounded-lg hover:bg-gray-300 transition duration-150">
+                    Cancel
+                </button>
+                <button id="confirmDeleteButton" class="px-4 py-2 text-sm font-medium text-white bg-red-600 rounded-lg hover:bg-red-700 transition duration-150 shadow-md">
+                    Delete Permanently
+                </button>
+            </div>
+        </div>
+    </div>
 </body>
 </html>
-s
