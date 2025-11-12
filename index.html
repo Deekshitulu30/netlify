@@ -4,6 +4,47 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Student Task Spinner</title>
+    <script type="module">
+  // Import required Firebase modules
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.1/firebase-app.js";
+  import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword } 
+      from "https://www.gstatic.com/firebasejs/10.12.1/firebase-auth.js";
+
+  // Your Firebase config
+  const firebaseConfig = {
+    apiKey: "YOUR_API_KEY",
+    authDomain: "YOUR_PROJECT.firebaseapp.com",
+    projectId: "YOUR_PROJECT_ID",
+    storageBucket: "YOUR_PROJECT.appspot.com",
+    messagingSenderId: "YOUR_SENDER_ID",
+    appId: "YOUR_APP_ID"
+  };
+
+  // Initialize Firebase
+  const app = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+
+  // Example: sign-up function
+  async function registerUser(email, password) {
+    try {
+      const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+      console.log("Registered:", userCredential.user);
+    } catch (error) {
+      console.error("Signup error:", error.message);
+    }
+  }
+
+  // Example: login function
+  async function loginUser(email, password) {
+    try {
+      const userCredential = await signInWithEmailAndPassword(auth, email, password);
+      console.log("Logged in:", userCredential.user);
+    } catch (error) {
+      console.error("Login error:", error.message);
+    }
+  }
+</script>
+
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         // Use Inter font globally
@@ -633,3 +674,4 @@
     </div>
 </body>
 </html>
+
