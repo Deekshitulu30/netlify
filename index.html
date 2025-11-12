@@ -554,50 +554,7 @@
 </head>
 <body class="bg-gray-100 min-h-screen font-sans antialiased p-4 sm:p-6">
     <!-- Title and User ID -->
-    <input type="email" id="email" placeholder="Email">
-  <input type="password" id="password" placeholder="Password">
-  <button id="signupBtn">Sign Up</button>
-  <button id="loginBtn">Log In</button>
-     <script type="module">
-  // Import required Firebase modules
-  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.1/firebase-app.js";
-  import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword } 
-      from "https://www.gstatic.com/firebasejs/10.12.1/firebase-auth.js";
-
-  // Your Firebase config
-  const firebaseConfig = {
-    apiKey: "YOUR_API_KEY",
-    authDomain: "YOUR_PROJECT.firebaseapp.com",
-    projectId: "YOUR_PROJECT_ID",
-    storageBucket: "YOUR_PROJECT.appspot.com",
-    messagingSenderId: "YOUR_SENDER_ID",
-    appId: "YOUR_APP_ID"
-  };
-
-  // Initialize Firebase
-  const app = initializeApp(firebaseConfig);
-  const auth = getAuth(app);
-
-  // Example: sign-up function
-  async function registerUser(email, password) {
-    try {
-      const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-      console.log("Registered:", userCredential.user);
-    } catch (error) {
-      console.error("Signup error:", error.message);
-    }
-  }
-
-  // Example: login function
-  async function loginUser(email, password) {
-    try {
-      const userCredential = await signInWithEmailAndPassword(auth, email, password);
-      console.log("Logged in:", userCredential.user);
-    } catch (error) {
-      console.error("Login error:", error.message);
-    }
-  }
-</script>
+  
     <div class="max-w-4xl mx-auto mb-6 text-center">
         <h1 class="text-4xl font-extrabold text-orange-600 mb-2">Student Focus Navigator</h1>
         <p id="userIdDisplay" class="text-sm text-gray-500">Loading...</p>
@@ -679,4 +636,5 @@
     </div>
 </body>
 </html>
+
 
